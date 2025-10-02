@@ -1,35 +1,42 @@
-// the main question is  how to brodcast ?
-
 use colored::Colorize;
 use std::{
-    io::{self, Read, Write},
+    io::{self, Read, Write, stdout},
     net::{Shutdown, TcpListener, TcpStream},
-    sync::Arc,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
 
-fn handle_client(mut stream: TcpStream, clients: Arc<Mutex<Vec<TcpStream>>>) {
-    let mut buffer = [0; 1024];
+struct Client {
+    username: String,
+    stream: TcpStream,
+}
+
+fn handle_client(mut stream: TcpStream, clients: Arc<Mutex<Vec<Client>>>, username: String) {
+    let mut buffer = [0; 1024]; // the user input buffer
     loop {
         match stream.read(&mut buffer) {
+            // Checking user status
             Ok(0) => {
-                println!("Client disconnected");
+                println!("{} disconnected", username.red());
                 break;
             }
             Ok(n) => {
                 let msg = String::from_utf8_lossy(&buffer[..n]);
-                println!("{} {}", "[CLIENT]".blue(), msg.blue());
+                println!("{} {}", format!("[{}]", username).blue(), msg.blue());
+
                 let mut locked = clients.lock().unwrap();
-                locked.retain(|s| s.peer_addr().is_ok());
+                locked.retain(|c| c.stream.peer_addr().is_ok());
 
                 for client in locked.iter_mut() {
-                    if client.peer_addr().unwrap() != stream.peer_addr().unwrap() {
-                        let _ = client.write_all(format!("{}\n", msg).as_bytes());
+                    if client.stream.peer_addr().unwrap() != stream.peer_addr().unwrap() {
+                        let _ = client
+                            .stream
+                            .write_all(format!("{}: {}\n", username, msg).as_bytes());
                     }
                 }
             }
+            // Handling Error
             Err(e) => {
                 eprintln!("Error: {}", e);
                 break;
@@ -40,28 +47,41 @@ fn handle_client(mut stream: TcpStream, clients: Arc<Mutex<Vec<TcpStream>>>) {
 
 fn disconnect_client(stream: &mut TcpStream) -> io::Result<()> {
     stream.shutdown(Shutdown::Both)?;
-    println!("Client Disconnected from the srever.");
-
+    println!("Client Disconnected from the server.");
     Ok(())
 }
 
 fn main() {
+    print!("Enter your name: ");
+    stdout().flush().unwrap();
+    let mut username = String::new();
+    io::stdin().read_line(&mut username).unwrap();
+    let _username = username.trim().to_string();
+
     println!("Write a message: ");
+
     // Server in a separate thread
     thread::spawn(|| {
         let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
         println!("{}", "Server listening on 7878...".green());
-        let clients = Arc::new(Mutex::new(Vec::<TcpStream>::new()));
+        let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
 
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
                     let clients_clone = Arc::clone(&clients);
 
-                    clients.lock().unwrap().push(stream.try_clone().unwrap());
-                    thread::spawn(move || handle_client(stream, clients_clone));
+                    // For now, assign "Anonymous" since server doesn't know username
+                    let username = "Anonymous".to_string();
+
+                    clients.lock().unwrap().push(Client {
+                        username: username.clone(),
+                        stream: stream.try_clone().unwrap(),
+                    });
+
+                    thread::spawn(move || handle_client(stream, clients_clone, username));
                 }
-                Err(e) => println!("Connectio faild: {}", e),
+                Err(e) => println!("Connection failed: {}", e),
             }
         }
     });
@@ -72,7 +92,7 @@ fn main() {
     // Client
     if let Ok(mut stream) = TcpStream::connect("127.0.0.1:7878") {
         println!("Client connected to server!");
-        let mut stream_clone = stream.try_clone().expect("Faild to clone stream");
+        let mut stream_clone = stream.try_clone().expect("Failed to clone stream");
         thread::spawn(move || {
             let mut buffer = [0; 512];
             loop {
@@ -83,9 +103,7 @@ fn main() {
                     }
                     Ok(n) => {
                         let msg = String::from_utf8_lossy(&buffer[..n]);
-
-                        println!("[SERVER]: {}", msg);
-                        println!(" {} {}", "[SERVER]".green(), msg.green());
+                        println!("{} {}", "[SERVER]".green(), msg.green());
                         print!("> ");
                         io::stdout().flush().unwrap();
                     }
@@ -123,6 +141,5 @@ fn main() {
     } else {
         println!("Client could not connect.");
     }
-
     thread::sleep(Duration::from_secs(1));
 }
